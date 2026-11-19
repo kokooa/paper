@@ -13,8 +13,8 @@ const dev = new URLSearchParams(location.search).get('dev');   // 개발용: 가
 const REST = dev ? `http://${dev}` : 'https://fapi.binance.com';
 const WS_PUBLIC = dev ? `ws://${dev}/public/stream` : 'wss://fstream.binance.com/public/stream';
 const WS_MARKET = dev ? `ws://${dev}/market/stream` : 'wss://fstream.binance.com/market/stream';
-const IVS = { '1m': 60e3, '5m': 300e3, '15m': 900e3, '1h': 3600e3 };
-const IV_KO = { '1m': '1분', '5m': '5분', '15m': '15분', '1h': '1시간' };
+const IVS = { '1m': 60e3, '5m': 300e3, '15m': 900e3, '1h': 3600e3, '4h': 14400e3 };
+const IV_KO = { '1m': '1분', '5m': '5분', '15m': '15분', '1h': '1시간', '4h': '4시간' };
 const TZ = -new Date().getTimezoneOffset() * 60;
 const AMOUNTS = [5, 10, 20, 50, 100, 200, 300, 500, 1000, 2000, 5000, 10000];
 const C = { buy: '#0ecb81', sell: '#f6465d', warn: '#e0a23a', text: '#c9ced6' };
@@ -25,7 +25,7 @@ if (window.MP_BRACKETS) engine.brackets = window.MP_BRACKETS.t;
 const S = {
   symbol: store.get('mpm.symbol', 'BTCUSDT'), iv: store.get('mpm.iv', '1m'), amount: store.get('mpm.amount', 100),
   fav: new Set(store.get('mpm.fav', [])), ready: false, bar: null, klKey: '', tick24: null, tickers: {}, tickersAt: 0,
-  symTab: 'all', menuTab: 'sum', sound: store.get('mpm.sound', true), study: store.get('mpm.study', true), lines: [], lineSig: '', dirty: {}, hiddenAt: 0, busy: false, resetArmed: 0,
+  symTab: 'all', symSort: 'vol', hl: [], menuTab: 'sum', sound: store.get('mpm.sound', true), study: store.get('mpm.study', true), lines: [], lineSig: '', dirty: {}, hiddenAt: 0, busy: false, resetArmed: 0,
 };
 if (!IVS[S.iv]) S.iv = '1m';
 
@@ -110,6 +110,7 @@ function onPublic(d) {
 function onMarket(d) {
   if (d.e === 'aggTrade') {
     engine.onTrade(d.s, +d.p);
+    if (engine.events.length) after();   // 자동 익절·손절이 체결됐을 때
     if (d.s === S.symbol) { onBarTrade(+d.p, d.T, +d.q || 0); S.dirty.quote = true; }
   } else if (d.e === 'markPriceUpdate') {
     engine.onMark(d.s, +d.p, +d.r || 0, +d.T || 0);
@@ -124,7 +125,7 @@ function subscribe() {
   const held = Object.keys(engine.state.positions), all = new Set([S.symbol, ...held]);
   pub.set([...all].map(s => s.toLowerCase() + '@depth20@100ms'));
   const low = S.symbol.toLowerCase();
-  mkt.set([low + '@aggTrade', low + '@miniTicker', ...[...all].map(s => s.toLowerCase() + '@markPrice@1s')]);
+  mkt.set([low + '@miniTicker', ...[...all].flatMap(s => [s.toLowerCase() + '@aggTrade', s.toLowerCase() + '@markPrice@1s'])]);
 }
 function status() {
   let text = '';
@@ -162,7 +163,7 @@ async function loadTickers() {
   if (Date.now() - S.tickersAt < 30000) return;
   const rows = await getJSON('/fapi/v1/ticker/24hr');
   S.tickers = {};
-  for (const r of rows) if (engine.specs[r.symbol]) S.tickers[r.symbol] = [+r.lastPrice, +r.openPrice, +r.quoteVolume];
+  for (const r of rows) if (engine.specs[r.symbol]) S.tickers[r.symbol] = [+r.lastPrice, +r.openPrice, +r.quoteVolume, +r.lowPrice ? (+r.highPrice - +r.lowPrice) / +r.lowPrice : 0];
   S.tickersAt = Date.now();
 }
 
@@ -209,6 +210,7 @@ async function loadKlines() {
       m.line.setData(out);
     }
     S.closes = bars.map(b => b.close);
+    S.hl = rows.slice(-15, -1).map(r => (+r[2] - +r[3]) / +r[4]);   // 끝난 봉 14개의 (고가-저가)/종가
     const r = rows[rows.length - 1];
     S.bar = { t: r[0], open: +r[1], high: +r[2], low: +r[3], close: +r[4], v: +r[5] };
     S.firstBar = rows[0][0];
@@ -220,7 +222,7 @@ function onBarTrade(p, T, q) {
   const bar = S.bar;
   if (!bar) return;
   const ms = IVS[S.iv], t = Math.floor(T / ms) * ms;
-  if (t > bar.t) { S.bar = { t, open: p, high: p, low: p, close: p, v: q }; S.closes.push(p); if (S.closes.length > 600) S.closes.shift(); }
+  if (t > bar.t) { S.hl.push((bar.high - bar.low) / bar.close); if (S.hl.length > 14) S.hl.shift(); S.bar = { t, open: p, high: p, low: p, close: p, v: q }; S.closes.push(p); if (S.closes.length > 600) S.closes.shift(); }
   else if (t === bar.t) { bar.close = p; bar.v += q; if (p > bar.high) bar.high = p; if (p < bar.low) bar.low = p; S.closes[S.closes.length - 1] = p; }
   else return;
   S.dirty.bar = true;
@@ -239,14 +241,18 @@ function drawMarkers() {
 function drawLines() {
   const p = engine.state.positions[S.symbol], want = [];
   if (p) {
-    want.push([p.entry, p.side === 'LONG' ? '매수 진입' : '매도 진입', p.side === 'LONG' ? C.buy : C.sell]);
-    want.push([engine.liqPrice(S.symbol, p), '청산가', C.warn]);
+    const t = engine.triggers(p);
+    want.push([p.entry, p.side === 'LONG' ? '매수 진입' : '매도 진입', C.text, 0]);
+    want.push([engine.breakeven(p), '본전', '#8b94a3', 2]);
+    if (t.tp != null) want.push([t.tp, '익절', C.buy, 2]);
+    if (t.sl != null) want.push([t.sl, '손절', C.sell, 2]);
+    want.push([engine.liqPrice(S.symbol, p), '청산가', C.warn, 0]);
   }
   const sig = S.symbol + JSON.stringify(want);
   if (sig === S.lineSig) return;
   S.lineSig = sig;
   S.lines.forEach(l => candles.removePriceLine(l));
-  S.lines = want.map(([p0, title, color]) => candles.createPriceLine({ price: p0, title, color, lineWidth: 1, lineStyle: 0, axisLabelVisible: true }));
+  S.lines = want.map(([p0, title, color, lineStyle]) => candles.createPriceLine({ price: p0, title, color, lineWidth: 1, lineStyle, axisLabelVisible: true }));
 }
 $('ivs').innerHTML = Object.keys(IVS).map(iv => `<button data-iv="${iv}">${IV_KO[iv]}</button>`).join('');
 function markIv() { for (const b of $('ivs').children) b.classList.toggle('on', b.dataset.iv === S.iv); }
@@ -269,7 +275,7 @@ function after() {
         const f = ev.fill, pnl = f.kind === 'OPEN' ? '' : ` · ${signed(f.realized)}`;
         toast(f.kind === 'LIQ' ? 'error' : f.side === 'BUY' ? 'b' : 's', `${coin(f.symbol)} ${f.reason} ${qty(f.qty, f.symbol)} @ ${price(f.price, f.symbol)}${pnl}`);
         if (f.kind === 'LIQ') sound = 'liq';
-        else if (f.kind !== 'FUNDING' && sound !== 'liq') sound = /정리/.test(f.reason) ? 'close' : sound === 'close' ? 'close' : f.side === 'BUY' ? 'buy' : 'sell';
+        else if (f.kind !== 'FUNDING' && sound !== 'liq') sound = /정리|익절|손절/.test(f.reason) ? 'close' : sound === 'close' ? 'close' : f.side === 'BUY' ? 'buy' : 'sell';
       }
     }
     if (sound) beep(sound);
@@ -350,6 +356,8 @@ $('amtBtn').addEventListener('click', () => {
   $('amtInput').value = S.amount;
   $('levRange').max = top; $('levRange').value = lev; $('levNow').textContent = lev;
   $('levMax').textContent = `${coin(S.symbol)} 최대 ${top}배`;
+  const st = engine.state.settings;
+  $('tpInput').value = st.tp_pct ? +(st.tp_pct * 100).toFixed(3) : ''; $('slInput').value = st.sl_pct ? +(st.sl_pct * 100).toFixed(3) : '';
   $('amtChips').innerHTML = [10, 50, 100, 500, 1000].map(a => `<button data-a="${a}">${a}</button>`).join('');
   $('levChips').innerHTML = [1, 5, 10, 20, 50, 75, 100, 125].filter(l => l <= top).map(l => `<button data-l="${l}">${l}배</button>`).join('');
   amtNote();
@@ -357,10 +365,16 @@ $('amtBtn').addEventListener('click', () => {
 });
 function amtNote() {
   const a = parseFloat($('amtInput').value) || 0, lev = +$('levRange').value, cap = engine.notionalCap(S.symbol, lev);
-  $('amtNote').textContent = `한 번 누르면 약 ${usd(a * lev)} USDT어치를 삽니다.` + (cap != null ? ` 이 배율의 포지션 한도는 ${num(cap, 0)} USDT입니다.` : '') +
-    (engine.state.positions[S.symbol] ? ' 포지션이 있는 동안에는 배율을 바꿀 수 없습니다.' : '');
+  const fee = engine.state.settings.taker_fee, tp = parseFloat($('tpInput').value) / 100, sl = parseFloat($('slInput').value) / 100, size = a * lev;
+  let text = `한 번 누르면 약 ${usd(size)} USDT어치를 삽니다. 왕복 수수료는 약 ${usd(size * fee * 2)} USDT(가격 ${num(fee * 200, 2)}% 움직임)입니다.`;
+  if (tp > 0) text += ` 익절 ${num(tp * 100, 2)}%에 닿으면 수수료를 빼고 약 ${signed(size * (tp - fee * 2))} USDT.`;
+  if (sl > 0) text += ` 손절 ${num(sl * 100, 2)}%에 닿으면 약 ${signed(-size * (sl + fee * 2))} USDT.`;
+  if (tp > 0 || sl > 0) text += ' 자동 익절·손절은 앱이 열려 있는 동안 동작하고, 닫아 둔 동안의 것은 다시 열 때 정산합니다.';
+  if (cap != null) text += ` 이 배율의 포지션 한도는 ${num(cap, 0)} USDT입니다.`;
+  if (engine.state.positions[S.symbol]) text += ' 포지션이 있는 동안에는 배율을 바꿀 수 없습니다.';
+  $('amtNote').textContent = text;
 }
-$('amtInput').addEventListener('input', amtNote);
+for (const id of ['amtInput', 'tpInput', 'slInput']) $(id).addEventListener('input', amtNote);
 $('levRange').addEventListener('input', e => { $('levNow').textContent = e.target.value; amtNote(); });
 $('amtChips').addEventListener('click', e => { if (e.target.dataset.a) { $('amtInput').value = e.target.dataset.a; amtNote(); } });
 $('levChips').addEventListener('click', e => { if (e.target.dataset.l) { $('levRange').value = e.target.dataset.l; $('levNow').textContent = e.target.dataset.l; amtNote(); } });
@@ -368,6 +382,7 @@ $('amtOk').addEventListener('click', () => {
   const a = parseFloat($('amtInput').value), lev = +$('levRange').value;
   if (!(a > 0)) return toast('error', '증거금을 입력하세요');
   try {
+    engine.updateSettings({ tp_pct: (parseFloat($('tpInput').value) || 0) / 100, sl_pct: (parseFloat($('slInput').value) || 0) / 100 });
     if (lev !== engine.leverage(S.symbol)) engine.setLeverage(S.symbol, lev);
   } catch (e) { toast('error', e.message); }
   S.amount = a; store.set('mpm.amount', a);
@@ -396,13 +411,15 @@ function renderSymbols() {
   if (S.symTab === 'fav') syms = syms.filter(s => S.fav.has(s));
   if (S.symTab === 'pos') syms = syms.filter(s => held[s]);
   if (q) syms = syms.filter(s => s.includes(q));
-  const vol = s => (S.tickers[s] ? S.tickers[s][2] : 0);
-  syms.sort((a, b) => vol(b) - vol(a) || (a < b ? -1 : 1));
+  const tk = (s, i) => (S.tickers[s] ? S.tickers[s][i] : 0), chg = s => (tk(s, 1) ? tk(s, 0) / tk(s, 1) - 1 : 0);
+  const by = { vol: s => tk(s, 2), range: s => tk(s, 3), up: chg, down: s => -chg(s) }[S.symSort];
+  syms.sort((a, b) => by(b) - by(a) || (a < b ? -1 : 1));
   if (q) syms.sort((a, b) => b.startsWith(q) - a.startsWith(q));
   $('symList').innerHTML = syms.slice(0, 300).map(s => {
     const t = S.tickers[s], c = t && t[1] ? t[0] / t[1] - 1 : null;
     return `<div class="row${s === S.symbol ? ' on' : ''}" data-s="${s}"><button class="star${S.fav.has(s) ? ' fav' : ''}">★</button>` +
-      `<span class="nm">${coin(s)}<small>USDT</small>${held[s] ? ' ●' : ''}</span><span class="pr">${t ? price(t[0], s) : ''}</span><span class="ch ${cls(c)}">${c == null ? '' : pct(c)}</span></div>`;
+      `<span class="nm">${coin(s)}<small>USDT</small>${held[s] ? ' ●' : ''}</span><span class="pr">${t ? price(t[0], s) : ''}</span>` +
+      (S.symSort === 'range' ? `<span class="ch dim">${t ? num(t[3] * 100, 1) + '%' : ''}</span></div>` : `<span class="ch ${cls(c)}">${c == null ? '' : pct(c)}</span></div>`);
   }).join('') || `<p class="empty">${S.symTab === 'fav' && !q ? '★를 눌러 즐겨찾기에 추가하세요' : S.symTab === 'pos' && !q ? '보유 중인 종목이 없습니다' : '해당하는 종목이 없습니다'}</p>`;
   for (const b of $('symTabs').children) b.classList.toggle('on', b.dataset.t === S.symTab);
 }
@@ -413,6 +430,7 @@ $('btnSym').addEventListener('click', () => {
   loadTickers().then(renderSymbols).catch(() => {});
 });
 $('search').addEventListener('input', renderSymbols);
+$('symSort').addEventListener('change', e => { S.symSort = e.target.value; renderSymbols(); $('symList').scrollTop = 0; });
 $('symTabs').addEventListener('click', e => { if (e.target.dataset.t) { S.symTab = e.target.dataset.t; renderSymbols(); } });
 $('symList').addEventListener('click', e => {
   const row = e.target.closest('.row');
@@ -528,7 +546,7 @@ function fillsCsv(month) {
 function restore(state) {
   if (!state || typeof state.wallet !== 'number' || !state.positions || !Array.isArray(state.trades)) throw new Error('모의매매 계좌 파일이 아닙니다');
   engine.state = state;
-  engine.state.settings = Object.assign({ taker_fee: 0.0005, mmr: 0.01 }, state.settings || {});
+  engine.state.settings = Object.assign({ taker_fee: 0.0005, mmr: 0.01, tp_pct: 0, sl_pct: 0 }, state.settings || {});
   engine.dirty = true; S.lineSig = '';
   after(); drawMarkers();
 }
@@ -651,13 +669,19 @@ function renderAccount() {
   $('amtSub').textContent = `USDT ×${lev}배`;
   const p = a.positions.find(x => x.symbol === S.symbol), others = a.positions.length - (p ? 1 : 0);
   $('posline').innerHTML = p
-    ? `<b class="${p.side === 'LONG' ? 'up' : 'down'}">${p.side === 'LONG' ? '매수' : '매도'} ${qty(p.qty)}</b> · 진입 <b>${price(p.entry)}</b> · 청산가 ${price(p.liq)} · <b class="${cls(p.upnl)}">${signed(p.upnl)} (${pct(p.roe)})</b>${others ? ` · 외 ${others}종목` : ''}`
+    ? `<b class="${p.side === 'LONG' ? 'up' : 'down'}">${p.side === 'LONG' ? '매수' : '매도'} ${qty(p.qty)}</b> · 진입 <b>${price(p.entry)}</b> · 본전 ${price(p.breakeven)} · 수수료 빼면 <b class="${cls(p.net)}">${signed(p.net)}</b>${others ? ` · 외 ${others}종목` : ''}`
     : others ? `다른 종목에 포지션 ${others}개 · 여기를 눌러 보기` : todayLine();
   const n = a.positions.length;
   $('btnCloseAll').disabled = !n;
   $('closeInfo').textContent = n ? `${n}종목 · ${signed(a.upnl)}` : '';
   $('btnHalf').disabled = $('btnCloseOne').disabled = !p;
   drawLines();
+  // 봉 하나가 평균 얼마나 움직이는지와 왕복 수수료를 견준다: 어느 봉 단위에서 수수료보다 큰 움직임이 나오는지 보기 위한 것
+  const fee2 = a.settings.taker_fee * 2;
+  if (S.hl.length >= 5 && fee2 > 0) {
+    const avg = S.hl.reduce((x, y) => x + y, 0) / S.hl.length, ratio = avg / fee2;
+    $('vola').innerHTML = `${IV_KO[S.iv]}봉 평균 폭 <b>${num(avg * 100, 2)}%</b> · 왕복 수수료 ${num(fee2 * 100, 2)}%의 <b class="${ratio >= 2 ? 'up' : ratio < 1 ? 'down' : ''}">${num(ratio, 1)}배</b>`;
+  } else $('vola').textContent = '';
 }
 let lastAccount = 0;
 function frame(now) {

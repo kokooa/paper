@@ -9,7 +9,7 @@
 (function (root) {
   'use strict';
   const EPS = 1e-12, FEED_STALE_MS = 5000, KEEP = 3000, DEFAULT_LEVERAGE = 20, MAX_LEVERAGE = 125;
-  const DEFAULTS = { taker_fee: 0.0005, mmr: 0.01 };
+  const DEFAULTS = { taker_fee: 0.0005, mmr: 0.01, tp_pct: 0, sl_pct: 0 };
 
   class OrderError extends Error {}
 
@@ -78,6 +78,16 @@
       if (pos.qty > 0) return Math.max(0, (pos.entry * q - pos.margin - cum) / (q * (1 - mmr)));
       return (pos.entry * q + pos.margin + cum) / (q * (1 + mmr));
     }
+    /** 수수료(들어갈 때 + 나올 때)를 내고도 손해가 아닌 가격 */
+    breakeven(pos) {
+      const f = this.state.settings.taker_fee;
+      return pos.qty > 0 ? pos.entry * (1 + f) / (1 - f) : pos.entry * (1 - f) / (1 + f);
+    }
+    /** 자동 익절·손절 가격. 진입가에서 설정한 비율만큼 움직인 가격이며, 꺼져 있으면 null */
+    triggers(pos) {
+      const s = this.state.settings, dir = pos.qty > 0 ? 1 : -1;
+      return { tp: s.tp_pct > 0 ? pos.entry * (1 + dir * s.tp_pct) : null, sl: s.sl_pct > 0 ? pos.entry * (1 - dir * s.sl_pct) : null };
+    }
     upnl(symbol, pos) {
       const price = this.mark[symbol] || this.last[symbol] || pos.entry;
       return (price - pos.entry) * pos.qty;
@@ -86,11 +96,13 @@
       const s = this.state, positions = [];
       let total = 0;
       for (const symbol in s.positions) {
-        const p = s.positions[symbol], u = this.upnl(symbol, p);
+        const p = s.positions[symbol], u = this.upnl(symbol, p), q = Math.abs(p.qty), f = s.settings.taker_fee, t = this.triggers(p);
+        const now = this.mark[symbol] || this.last[symbol] || p.entry;
         total += u;
         positions.push({
-          symbol, side: p.side, qty: Math.abs(p.qty), entry: p.entry, mark: this.mark[symbol], margin: p.margin,
+          symbol, side: p.side, qty: q, entry: p.entry, mark: this.mark[symbol], margin: p.margin,
           leverage: p.leverage, upnl: u, roe: p.margin ? u / p.margin : 0, liq: this.liqPrice(symbol, p), opened_ms: p.opened_ms,
+          breakeven: this.breakeven(p), net: u - q * p.entry * f - q * now * f, tp: t.tp, sl: t.sl,
         });
       }
       return { wallet: s.wallet, equity: s.wallet + total, available: this.available(), upnl: total,
@@ -271,9 +283,13 @@
       this.dirty = true;
     }
     updateSettings(values) {
-      const fee = +values.taker_fee;
-      if (!(fee >= 0 && fee <= 0.01)) throw new OrderError('수수료는 0~1% 사이여야 합니다');
-      this.state.settings.taker_fee = fee;
+      const limits = { taker_fee: [0, 0.01, '수수료는 0~1% 사이여야 합니다'], tp_pct: [0, 0.5, '익절은 0~50% 사이여야 합니다'], sl_pct: [0, 0.5, '손절은 0~50% 사이여야 합니다'] };
+      for (const key in limits) {
+        if (values[key] == null) continue;
+        const v = +values[key], [lo, hi, why] = limits[key];
+        if (!(v >= lo && v <= hi)) throw new OrderError(why);
+        this.state.settings[key] = v;
+      }
       this.dirty = true;
     }
     reset(balance) {
@@ -286,7 +302,16 @@
     /* ---------------------------------------------------------------- 시세 입력 */
     onDepth(symbol, bids, asks) { this.books[symbol] = { bids, asks }; this.feedMs = this.clock(); }
     clearBooks() { this.books = {}; }
-    onTrade(symbol, price) { this.last[symbol] = price; }
+    onTrade(symbol, price) {
+      this.last[symbol] = price;
+      const pos = this.state.positions[symbol];
+      if (!pos) return;
+      const t = this.triggers(pos), long = pos.qty > 0;
+      let hit = null;
+      if (t.sl != null && (long ? price <= t.sl : price >= t.sl)) hit = '손절';
+      else if (t.tp != null && (long ? price >= t.tp : price <= t.tp)) hit = '익절';
+      if (hit) { try { this.close(symbol, hit); } catch (e) { /* 호가가 끊긴 동안에는 다음 체결에서 다시 시도 */ } }
+    }
     onMark(symbol, mark, rate, nextMs) {
       this.mark[symbol] = mark;
       const pos = this.state.positions[symbol], prev = this.funding[symbol];
@@ -312,6 +337,12 @@
       if (!pos) return false;
       const liq = this.liqPrice(symbol, pos);
       if ((pos.qty > 0 && low <= liq) || (pos.qty < 0 && high >= liq)) { this.liquidate(symbol, pos, liq); return true; }
+      // 자동 손절·익절도 뒤늦게 판정한다. 둘 다 닿았으면 순서를 알 수 없으므로 손절로 본다
+      const t = this.triggers(pos), long = pos.qty > 0, side = long ? 'SELL' : 'BUY';
+      let hit = null;
+      if (t.sl != null && (long ? low <= t.sl : high >= t.sl)) hit = ['손절', t.sl];
+      else if (t.tp != null && (long ? high >= t.tp : low <= t.tp)) hit = ['익절', t.tp];
+      if (hit) { this.applyFill(symbol, side, Math.abs(pos.qty), hit[1], this.state.settings.taker_fee, hit[0]); return true; }
       return false;
     }
     liquidate(symbol, pos, liq) {
