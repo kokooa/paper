@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="모의매매">
+<meta name="theme-color" content="#0e1116">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<title>원터치 모의매매</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <header>
+    <button id="btnSym" class="symbtn"><b id="sym">–</b><i>▾</i></button>
+    <div class="px"><b id="last">–</b><span id="chg"></span></div>
+    <div class="ivs" id="ivs"></div>
+    <button id="btnMenu" class="icon" aria-label="메뉴">☰</button>
+  </header>
+  <div id="banner" hidden></div>
+  <div id="chart"></div>
+
+  <section id="info">
+    <div class="cell"><label>총자산</label><b id="equity">–</b></div>
+    <div class="cell"><label>미실현 손익</label><b id="upnl">–</b></div>
+    <div class="cell"><label>사용 가능</label><b id="avail">–</b></div>
+    <p id="posline"></p>
+  </section>
+
+  <section id="panel">
+    <button id="btnSell" class="trade sell"><small>매도 SELL</small><b id="bid">–</b></button>
+    <div class="amt">
+      <button id="amtMinus" aria-label="줄이기">−</button>
+      <button id="amtBtn"><b id="amt">100</b><small id="amtSub">USDT ×20배</small></button>
+      <button id="amtPlus" aria-label="늘리기">+</button>
+    </div>
+    <button id="btnBuy" class="trade buy"><small>매수 BUY</small><b id="ask">–</b></button>
+  </section>
+  <section id="closes">
+    <button id="btnHalf" disabled>절반 정리</button>
+    <button id="btnCloseOne" disabled>이 종목 정리</button>
+    <button id="btnCloseAll" disabled><b>일괄 정리</b><small id="closeInfo"></small></button>
+  </section>
+  <p class="tag">가상 계좌 · 실제 주문 없음 · 바이낸스 선물 실시간 시세</p>
+</div>
+
+<div id="backdrop" hidden></div>
+
+<section class="sheet" id="sheetSym" hidden>
+  <div class="grab"><input id="search" placeholder="종목 검색" autocomplete="off" autocapitalize="characters" spellcheck="false"><button class="x" data-close>닫기</button></div>
+  <div class="tabs" id="symTabs"><button data-t="all" class="on">전체</button><button data-t="fav">★ 즐겨찾기</button><button data-t="pos">보유</button></div>
+  <div class="list" id="symList"></div>
+</section>
+
+<section class="sheet short" id="sheetAmt" hidden>
+  <div class="grab"><h3>한 번 누를 때 넣는 금액</h3><button class="x" data-close>닫기</button></div>
+  <div class="body">
+    <label class="field"><span>증거금</span><input id="amtInput" inputmode="decimal"><em>USDT</em></label>
+    <div class="chips" id="amtChips"></div>
+    <div class="levhead"><span>배율 <b id="levNow">20</b>배</span><span id="levMax" class="dim"></span></div>
+    <input id="levRange" type="range" min="1" max="125" step="1">
+    <div class="chips" id="levChips"></div>
+    <p class="note" id="amtNote"></p>
+    <button id="amtOk" class="primary">적용</button>
+  </div>
+</section>
+
+<section class="sheet" id="sheetMenu" hidden>
+  <div class="grab">
+    <div class="tabs" id="menuTabs"><button data-t="sum" class="on">요약</button><button data-t="pos">포지션</button><button data-t="hist">기록</button><button data-t="set">설정</button></div>
+    <button class="x" data-close>닫기</button>
+  </div>
+  <div class="list" id="menuSum"></div>
+  <div class="list" id="menuPos" hidden></div>
+  <div class="list" id="menuHist" hidden></div>
+  <div class="body" id="menuSet" hidden>
+    <label class="field"><span>수수료 (시장가)</span><input id="setFee" inputmode="decimal"><em>%</em></label>
+    <label class="check"><input id="setSound" type="checkbox"> 체결 소리 <span class="dim">(무음 스위치가 켜져 있으면 나지 않습니다)</span></label>
+    <label class="check"><input id="setStudy" type="checkbox"> 차트에 이동평균선(7·25·99)과 거래량 표시</label>
+    <button id="setOk" class="primary">저장</button>
+    <hr>
+    <h4>기록 보관</h4>
+    <div class="two"><button id="btnExport" class="ghost">파일로 내보내기</button><button id="btnImport" class="ghost">파일에서 가져오기</button></div>
+    <input id="importFile" type="file" accept="application/json,.json" hidden>
+    <p class="note">계좌와 기록은 이 기기의 브라우저에만 있습니다. 내보낸 파일은 계좌 전체(포지션·체결·종료된 거래)를 담고 있어 다른 기기에서 그대로 가져올 수 있습니다.</p>
+    <h4>GitHub에 자동 저장</h4>
+    <label class="field"><span>저장소</span><input id="ghRepo" placeholder="아이디/저장소" autocapitalize="off" autocorrect="off" spellcheck="false" style="text-align:left;font-size:14px"></label>
+    <label class="field"><span>토큰</span><input id="ghToken" type="password" placeholder="그 저장소만 쓸 수 있는 토큰" autocapitalize="off" autocorrect="off" style="text-align:left;font-size:14px"></label>
+    <div class="two"><button id="ghSave" class="ghost">연결하고 지금 저장</button><button id="ghLoad" class="ghost">GitHub에서 가져오기</button></div>
+    <p class="note" id="ghStatus"></p>
+    <p class="note">연결하면 거래가 끝날 때마다 저장소의 <b>paper/</b> 폴더에 계좌(state.json)와 달마다의 기록(trades-연-월.csv, fills-연-월.csv)을 올립니다. 토큰은 이 기기에만 저장됩니다. 기록용 저장소는 비공개로 따로 만들고, 그 저장소의 Contents 읽기·쓰기만 허용한 토큰(Fine-grained token)을 쓰세요.</p>
+    <hr>
+    <label class="field"><span>시작 잔고</span><input id="setBalance" inputmode="decimal"><em>USDT</em></label>
+    <button id="btnReset" class="danger">계좌 초기화</button>
+    <p class="note">포지션과 기록이 모두 지워집니다.</p>
+    <hr>
+    <p class="note" id="about"></p>
+    <p class="note">앱을 닫아 둔 동안에는 시세를 받지 못합니다. 다시 열면 그 사이의 최저·최고가로 강제청산 여부를 판정하고 펀딩을 정산합니다.</p>
+    <p class="note">차트: TradingView Lightweight Charts</p>
+  </div>
+</section>
+
+<div id="toasts"></div>
+<script src="lightweight-charts.js"></script>
+<script src="brackets.js"></script>
+<script src="engine.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
