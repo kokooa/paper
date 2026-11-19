@@ -17,7 +17,7 @@ const IVS = { '1m': 60e3, '5m': 300e3, '15m': 900e3, '1h': 3600e3 };
 const IV_KO = { '1m': '1분', '5m': '5분', '15m': '15분', '1h': '1시간' };
 const TZ = -new Date().getTimezoneOffset() * 60;
 const AMOUNTS = [5, 10, 20, 50, 100, 200, 300, 500, 1000, 2000, 5000, 10000];
-const C = { buy: '#2f6fed', sell: '#e5484d', warn: '#e0a23a', text: '#c9ced6' };
+const C = { buy: '#0ecb81', sell: '#f6465d', warn: '#e0a23a', text: '#c9ced6' };
 
 const engine = new Engine(store.get('mpm.state', null));
 if (window.MP_BRACKETS) engine.brackets = window.MP_BRACKETS.t;
@@ -183,7 +183,7 @@ chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.84, bottom: 0 } })
 const MAS = [[7, '#e0a23a'], [25, '#c069e0'], [99, '#3fbf9f']].map(([n, color]) => ({
   n, line: chart.addLineSeries({ color, lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
 }));
-const volColor = b => (b.close >= b.open ? 'rgba(47,111,237,.45)' : 'rgba(229,72,77,.45)');
+const volColor = b => (b.close >= b.open ? 'rgba(14,203,129,.45)' : 'rgba(246,70,93,.45)');
 function showStudy() {
   volume.applyOptions({ visible: S.study });
   MAS.forEach(m => m.line.applyOptions({ visible: S.study }));
